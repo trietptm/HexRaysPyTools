@@ -4,8 +4,11 @@ import logging
 import idaapi
 import idc
 
-import HexRaysPyTools.Core.Cache as Cache
-import HexRaysPyTools.Core.Const as Const
+import HexRaysPyTools.core.cache as cache
+import HexRaysPyTools.core.const as const
+import HexRaysPyTools.settings as settings
+import HexRaysPyTools.forms as forms
+
 
 logger = logging.getLogger(__name__)
 
@@ -13,12 +16,16 @@ logger = logging.getLogger(__name__)
 def is_imported_ea(ea):
     if idc.get_segm_name(ea) == ".plt":
         return True
-    return ea in Cache.imported_ea
+    return ea + idaapi.get_imagebase() in cache.imported_ea
 
 
 def is_code_ea(ea):
-    flags = idaapi.getFlags(ea)  # flags_t
-    return idaapi.isCode(flags)
+    if idaapi.cvar.inf.procname == "ARM":
+        # In case of ARM code in THUMB mode we sometimes get pointers with thumb bit set
+        flags = idaapi.get_full_flags(ea & -2)  # flags_t
+    else:
+        flags = idaapi.get_full_flags(ea)
+    return idaapi.is_code(flags)
 
 
 def is_rw_ea(ea):
@@ -26,36 +33,81 @@ def is_rw_ea(ea):
     return seg.perm & idaapi.SEGPERM_WRITE and seg.perm & idaapi.SEGPERM_READ
 
 
-def get_virtual_func_address(name, tinfo=None, offset=None):
+def get_ptr(ea):
+    """ Reads ptr at specified address. """
+    if const.EA64:
+        return idaapi.get_64bit(ea)
+    ptr = idaapi.get_32bit(ea)
+    if idaapi.cvar.inf.procname == "ARM":
+        ptr &= -2    # Clear thumb bit
+    return ptr
+
+
+def get_ordinal(tinfo):
+    """ Returns non-zero ordinal of tinfo if it exist in database """
+    ordinal = tinfo.get_ordinal()
+    if ordinal == 0:
+        t = idaapi.tinfo_t()
+        struct_name = tinfo.dstr().split()[-1]        # Get rid of `struct` prefix or something else
+        t.get_named_type(idaapi.cvar.idati, struct_name)
+        ordinal = t.get_ordinal()
+    return ordinal
+
+
+def get_virtual_func_addresses(name, tinfo=None, offset=None):
     """
-    :param name: method name
-    :param tinfo: class tinfo
+    Returns set of possible addresses of virtual function by its name.
+    If there're symbols in binary and name is the name of an overloaded function, then returns list of all address of
+    this overloaded function.
+    TODO: After implementing inheritance return set of methods of all child classes
+
+    :param name: method name, can be mangled
+    :param tinfo: class tinfo to which this method belong
     :param offset: virtual table offset
-    :return: address of the method
+    :return: list of possible addresses
     """
 
-    address = idc.LocByName(name)
+    address = idc.get_name_ea_simple(name)
 
     if address != idaapi.BADADDR:
-        return address
+        return [address]
 
-    address = Cache.demangled_names.get(name, idaapi.BADADDR)
-    if address != idaapi.BADADDR:
-        return address + idaapi.get_imagebase()
+    raw_addresses = cache.demangled_names.get(name)
+    if raw_addresses:
+        addresses = [ea + idaapi.get_imagebase() for ea in raw_addresses]
+        return addresses
 
     if tinfo is None or offset is None:
-        return
+        return []
 
     offset *= 8
     udt_member = idaapi.udt_member_t()
     while tinfo.is_struct():
-        address = Cache.demangled_names.get(tinfo.dstr() + '::' + name, idaapi.BADADDR)
+        address = cache.demangled_names.get(tinfo.dstr() + '::' + name, idaapi.BADADDR)
         if address != idaapi.BADADDR:
-            return address + idaapi.get_imagebase()
+            return [address + idaapi.get_imagebase()]
         udt_member.offset = offset
-        tinfo.find_udt_member(idaapi.STRMEM_OFFSET, udt_member)
+        tinfo.find_udt_member(udt_member, idaapi.STRMEM_OFFSET)
         tinfo = udt_member.type
         offset = offset - udt_member.offset
+
+
+def choose_virtual_func_address(name, tinfo=None, offset=None):
+    addresses = get_virtual_func_addresses(name, tinfo, offset)
+    if not addresses:
+        return
+
+    if len(addresses) == 1:
+        return addresses[0]
+
+    chooser = forms.MyChoose(
+        [[to_hex(ea), idc.demangle_name(idc.get_name(ea), idc.INF_LONG_DN)] for ea in addresses],
+        "Select Function",
+        [["Address", 10], ["Full name", 50]]
+    )
+    idx = chooser.Show(modal=True)
+    if idx != -1:
+        return addresses[idx]
 
 
 def get_func_argument_info(function, expression):
@@ -72,7 +124,7 @@ def get_func_argument_info(function, expression):
             if idx < func_tinfo.get_nargs():
                 return idx, func_tinfo.get_nth_arg(idx)
             return idx, None
-    print "[ERROR] Wrong usage of 'Helper.get_func_argument_info()'"
+    print("[ERROR] Wrong usage of 'Helper.get_func_argument_info()'")
 
 
 def set_func_argument(func_tinfo, index, arg_tinfo):
@@ -82,10 +134,35 @@ def set_func_argument(func_tinfo, index, arg_tinfo):
     func_tinfo.create_func(func_data)
 
 
+def get_func_arg_name(func_tinfo, arg_idx):
+    # type: (idaapi.tinfo_t, int) -> str
+
+    func_data = idaapi.func_type_data_t()
+    func_tinfo.get_func_details(func_data)
+    if arg_idx < func_tinfo.get_nargs():
+        return func_data[arg_idx].name
+
+
+def set_func_arg_name(func_tinfo, arg_idx, name):
+    # type: (idaapi.tinfo_t, int, str) -> None
+
+    func_data = idaapi.func_type_data_t()
+    func_tinfo.get_func_details(func_data)
+    func_data[arg_idx].name = name
+    func_tinfo.create_func(func_data)
+
+
 def set_funcptr_argument(funcptr_tinfo, index, arg_tinfo):
     func_tinfo = funcptr_tinfo.get_pointed_object()
     set_func_argument(func_tinfo, index, arg_tinfo)
     funcptr_tinfo.create_ptr(func_tinfo)
+
+
+def set_func_return(func_tinfo, return_tinfo):
+    func_data = idaapi.func_type_data_t()
+    func_tinfo.get_func_details(func_data)
+    func_data.rettype = return_tinfo
+    func_tinfo.create_func(func_data)
 
 
 def get_nice_pointed_object(tinfo):
@@ -117,22 +194,22 @@ def get_fields_at_offset(tinfo, offset):
     tinfo.get_udt_details(udt_data)
     udt_member = idaapi.udt_member_t()
     udt_member.offset = offset * 8
-    idx = tinfo.find_udt_member(idaapi.STRMEM_OFFSET, udt_member)
+    idx = tinfo.find_udt_member(udt_member, idaapi.STRMEM_OFFSET)
     if idx != -1:
         while idx < tinfo.get_udt_nmembers() and udt_data[idx].offset <= offset * 8:
             udt_member = udt_data[idx]
             if udt_member.offset == offset * 8:
                 if udt_member.type.is_ptr():
-                    result.append(idaapi.get_unk_type(Const.EA_SIZE))
+                    result.append(idaapi.get_unk_type(const.EA_SIZE))
                     result.append(udt_member.type)
-                    result.append(idaapi.dummy_ptrtype(Const.EA_SIZE, False))
+                    result.append(idaapi.dummy_ptrtype(const.EA_SIZE, False))
                 elif not udt_member.type.is_udt():
                     result.append(udt_member.type)
             if udt_member.type.is_array():
-                if (offset - udt_member.offset / 8) % udt_member.type.get_array_element().get_size() == 0:
+                if (offset - udt_member.offset // 8) % udt_member.type.get_array_element().get_size() == 0:
                     result.append(udt_member.type.get_array_element())
             elif udt_member.type.is_udt():
-                result.extend(get_fields_at_offset(udt_member.type, offset - udt_member.offset / 8))
+                result.extend(get_fields_at_offset(udt_member.type, offset - udt_member.offset // 8))
             idx += 1
     return result
 
@@ -141,7 +218,7 @@ def is_legal_type(tinfo):
     tinfo.clr_const()
     if tinfo.is_ptr() and tinfo.get_pointed_object().is_forward_decl():
         return tinfo.get_pointed_object().get_size() == idaapi.BADSIZE
-    return bool(filter(lambda x: x.equals_to(tinfo), Const.LEGAL_TYPES))
+    return settings.SCAN_ANY_TYPE or bool([x for x in const.LEGAL_TYPES if x.equals_to(tinfo)])
 
 
 def search_duplicate_fields(udt_data):
@@ -150,13 +227,13 @@ def search_duplicate_fields(udt_data):
     default_dict = collections.defaultdict(list)
     for idx, udt_member in enumerate(udt_data):
         default_dict[udt_member.name].append(idx)
-    return [indices for indices in default_dict.values() if len(indices) > 1]
+    return [indices for indices in list(default_dict.values()) if len(indices) > 1]
 
 
 def get_member_name(tinfo, offset):
     udt_member = idaapi.udt_member_t()
     udt_member.offset = offset * 8
-    tinfo.find_udt_member(idaapi.STRMEM_OFFSET, udt_member)
+    tinfo.find_udt_member(udt_member, idaapi.STRMEM_OFFSET)
     return udt_member.name
 
 
@@ -184,11 +261,11 @@ def get_funcs_calling_address(ea):
     xref_ea = idaapi.get_first_cref_to(ea)
     xrefs = set()
     while xref_ea != idaapi.BADADDR:
-        xref_func_ea = idc.GetFunctionAttr(xref_ea, idc.FUNCATTR_START)
+        xref_func_ea = idc.get_func_attr(xref_ea, idc.FUNCATTR_START)
         if xref_func_ea != idaapi.BADADDR:
             xrefs.add(xref_func_ea)
         else:
-            print "[Warning] Function not found at 0x{0:08X}".format(xref_ea)
+            print("[Warning] Function not found at 0x{0:08X}".format(xref_ea))
         xref_ea = idaapi.get_next_cref_to(ea, xref_ea)
     return xrefs
 
@@ -205,7 +282,7 @@ class FunctionTouchVisitor(idaapi.ctree_parentee_t):
         return 0
 
     def touch_all(self):
-        diff = self.functions.difference(Cache.touched_functions)
+        diff = self.functions.difference(cache.touched_functions)
         for address in diff:
             if is_imported_ea(address):
                 continue
@@ -215,12 +292,12 @@ class FunctionTouchVisitor(idaapi.ctree_parentee_t):
                     FunctionTouchVisitor(cfunc).process()
             except idaapi.DecompilationFailure:
                 logger.warn("IDA failed to decompile function at {}".format(to_hex(address)))
-                Cache.touched_functions.add(address)
+                cache.touched_functions.add(address)
         idaapi.decompile(self.cfunc.entry_ea)
 
     def process(self):
-        if self.cfunc.entry_ea not in Cache.touched_functions:
-            Cache.touched_functions.add(self.cfunc.entry_ea)
+        if self.cfunc.entry_ea not in cache.touched_functions:
+            cache.touched_functions.add(self.cfunc.entry_ea)
             self.apply_to(self.cfunc.body, None)
             self.touch_all()
             return True
@@ -229,7 +306,7 @@ class FunctionTouchVisitor(idaapi.ctree_parentee_t):
 
 def to_hex(ea):
     """ Formats address so it could be double clicked at console """
-    if Const.EA64:
+    if const.EA64:
         return "0x{:016X}".format(ea)
     return "0x{:08X}".format(ea)
 
@@ -237,7 +314,7 @@ def to_hex(ea):
 def to_nice_str(ea):
     """ Shows address as function name + offset """
     func_start_ea = idc.get_func_attr(ea, idc.FUNCATTR_START)
-    func_name = idc.Name(func_start_ea)
+    func_name = idc.get_name(func_start_ea)
     offset = ea - func_start_ea
     return "{}+0x{:X}".format(func_name, offset)
 
@@ -249,7 +326,7 @@ def save_long_str_to_idb(array_name, value):
         idc.delete_array(id)
     id = idc.create_array(array_name)
     r = []
-    for idx in xrange(len(value) / 1024 + 1):
+    for idx in range(len(value) // 1024 + 1):
         s = value[idx * 1024: (idx + 1) * 1024]
         r.append(s)
         idc.set_array_string(id, idx, s)
@@ -260,23 +337,49 @@ def load_long_str_from_idb(array_name):
     if id == -1:
         return None
     max_idx = idc.get_last_index(idc.AR_STR, id)
-    result = [idc.get_array_element(idc.AR_STR, id, idx) for idx in xrange(max_idx + 1)]
-    return "".join(result)
+    result = [idc.get_array_element(idc.AR_STR, id, idx) for idx in range(max_idx + 1)]
+    return b"".join(result).decode("utf-8")
+
+def create_padding_udt_member(offset, size):
+    # type: (long, long) -> idaapi.udt_member_t
+    """ Creates internal IDA structure with name gap_XXX and appropriate size and offset """
+
+    udt_member = idaapi.udt_member_t()
+    udt_member.name = "gap_{0:X}".format(offset)
+    udt_member.offset = offset
+    udt_member.size = size
+
+    if size == 1:
+        udt_member.type = const.BYTE_TINFO
+    else:
+        array_data = idaapi.array_type_data_t()
+        array_data.base = 0
+        array_data.elem_type = const.BYTE_TINFO
+        array_data.nelems = size
+        tmp_tinfo = idaapi.tinfo_t()
+        tmp_tinfo.create_array(array_data)
+        udt_member.type = tmp_tinfo
+    return udt_member
 
 
-# ======================================================================
-# Functions that extends IDA Pro capabilities
-# ======================================================================
+def decompile_function(address):
+    try:
+        cfunc = idaapi.decompile(address)
+        if cfunc:
+            return cfunc
+    except idaapi.DecompilationFailure:
+        pass
+    logger.warn("IDA failed to decompile function at 0x{address:08X}".format(address=address))
 
 
-def _find_asm_address(self, cexpr):
+def find_asm_address(cexpr, parents):
     """ Returns most close virtual address corresponding to cexpr """
 
     ea = cexpr.ea
     if ea != idaapi.BADADDR:
         return ea
 
-    for p in reversed(self.parents):
+    for p in reversed(parents):
         if p.ea != idaapi.BADADDR:
             return p.ea
 
@@ -305,7 +408,3 @@ def my_cexpr_t(*args, **kwargs):
         if 'z' in kwargs:
             cexpr._set_z(kwargs['z'])
     return cexpr
-
-
-def extend_ida():
-    idaapi.ctree_parentee_t._find_asm_address = _find_asm_address

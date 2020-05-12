@@ -1,22 +1,13 @@
 import logging
 import idaapi
 import idc
-from Core.Helper import to_hex, get_member_name, get_func_argument_info, get_funcs_calling_address, is_imported_ea
+from .core.helper import to_hex
+from .core import helper
 
 logger = logging.getLogger(__name__)
 
 
 SETTING_START_FROM_CURRENT_EXPR = True
-
-
-def decompile_function(address):
-    try:
-        cfunc = idaapi.decompile(address)
-        if cfunc:
-            return cfunc
-    except idaapi.DecompilationFailure:
-        pass
-    logger.warn("IDA failed to decompile function at 0x{address:08X}".format(address=address))
 
 
 class ScanObject(object):
@@ -37,6 +28,8 @@ class ScanObject(object):
                 if arg.e:
                     result.ea = ScanObject.get_expression_address(cfunc, arg.e)
                 return result
+            if arg.citype != idaapi.VDI_EXPR:
+                return None
             cexpr = arg.e
         else:
             cexpr = arg
@@ -49,11 +42,11 @@ class ScanObject(object):
         elif cexpr.op == idaapi.cot_memptr:
             t = cexpr.x.type.get_pointed_object()
             result = StructPtrObject(t.dstr(), cexpr.m)
-            result.name = get_member_name(t, cexpr.m)
+            result.name = helper.get_member_name(t, cexpr.m)
         elif cexpr.op == idaapi.cot_memref:
             t = cexpr.x.type
             result = StructRefObject(t.dstr(), cexpr.m)
-            result.name = get_member_name(t, cexpr.m)
+            result.name = helper.get_member_name(t, cexpr.m)
         elif cexpr.op == idaapi.cot_obj:
             result = GlobalVariableObject(cexpr.obj_ea)
             result.name = idaapi.get_short_name(cexpr.obj_ea)
@@ -124,12 +117,12 @@ class StructRefObject(ScanObject):
     # Represents `x.m` expression
     def __init__(self, struct_name, offset):
         super(StructRefObject, self).__init__()
-        self.__struct_name = struct_name
-        self.__offset = offset
+        self.struct_name = struct_name
+        self.offset = offset
         self.id = SO_STRUCT_REFERENCE
 
     def is_target(self, cexpr):
-        return cexpr.op == idaapi.cot_memref and cexpr.m == self.__offset and cexpr.x.type.dstr() == self.__struct_name
+        return cexpr.op == idaapi.cot_memref and cexpr.m == self.offset and cexpr.x.type.dstr() == self.struct_name
 
 
 class GlobalVariableObject(ScanObject):
@@ -144,18 +137,18 @@ class GlobalVariableObject(ScanObject):
 
 
 class CallArgObject(ScanObject):
-    # Represents call of function and specified argument
+    # Represents call of a function and argument index
     def __init__(self, func_address, arg_idx):
         super(CallArgObject, self).__init__()
-        self.__func_ea = func_address
-        self.__arg_idx = arg_idx
+        self.func_ea = func_address
+        self.arg_idx = arg_idx
         self.id = SO_CALL_ARGUMENT
 
     def is_target(self, cexpr):
-        return cexpr.op == idaapi.cot_call and cexpr.x.obj_ea == self.__func_ea
+        return cexpr.op == idaapi.cot_call and cexpr.x.obj_ea == self.func_ea
 
     def create_scan_obj(self, cfunc, cexpr):
-        e = cexpr.a[self.__arg_idx]
+        e = cexpr.a[self.arg_idx]
         while e.op in (idaapi.cot_cast, idaapi.cot_ref, idaapi.cot_add, idaapi.cot_sub, idaapi.cot_idx):
             e = e.x
         return ScanObject.create(cfunc, e)
@@ -251,7 +244,10 @@ class ObjectVisitor(idaapi.ctree_parentee_t):
         self.__manipulate(cexpr, obj)
 
     def __manipulate(self, cexpr, obj):
-        logger.debug("Expression {} at {} Id - {}".format(cexpr.opname, to_hex(self._find_asm_address(cexpr)), obj.id))
+        logger.debug("Expression {} at {} Id - {}".format(
+            cexpr.opname,
+            to_hex(helper.find_asm_address(cexpr, self.parents)),
+            obj.id))
 
 
 class ObjectDownwardsVisitor(ObjectVisitor):
@@ -279,7 +275,7 @@ class ObjectDownwardsVisitor(ObjectVisitor):
             if obj.is_target(x_cexpr):
                 if self.__is_object_overwritten(x_cexpr, obj, y_cexpr):
                     logger.info("Removed object {} from scanning at {}".format(
-                        obj, to_hex(self._find_asm_address(x_cexpr))))
+                        obj, to_hex(helper.find_asm_address(x_cexpr, self.parents))))
                     self._objects.remove(obj)
                 return 0
             elif obj.is_target(y_cexpr):
@@ -304,7 +300,7 @@ class ObjectDownwardsVisitor(ObjectVisitor):
             cexpr = cexpr.y
             if cexpr.op == idaapi.cot_cast:
                 cexpr = cexpr.x
-        return self._init_obj.is_target(cexpr) and self._find_asm_address(cexpr) == self._start_ea
+        return self._init_obj.is_target(cexpr) and helper.find_asm_address(cexpr, self.parents) == self._start_ea
 
     def __is_object_overwritten(self, x_cexpr, obj, y_cexpr):
         if len(self._objects) < 2:
@@ -386,7 +382,7 @@ class ObjectUpwardsVisitor(ObjectVisitor):
         super(ObjectUpwardsVisitor, self).process()
 
     def _is_initial_object(self, cexpr):
-        return self._init_obj.is_target(cexpr) and self._find_asm_address(cexpr) == self._start_ea
+        return self._init_obj.is_target(cexpr) and helper.find_asm_address(cexpr, self.parents) == self._start_ea
 
     def __add_object_assignment(self, from_obj, to_obj):
         if from_obj in self._tree:
@@ -417,7 +413,7 @@ class RecursiveObjectVisitor(ObjectVisitor):
         self.crippled = False
         self._arg_idx = -1
         self._debug_scan_tree = {}
-        self.__debug_scan_tree_root = idc.Name(self._cfunc.entry_ea)
+        self.__debug_scan_tree_root = idc.get_name(self._cfunc.entry_ea)
         self.__debug_message = []
 
     def visit_expr(self, cexpr):
@@ -482,8 +478,8 @@ class RecursiveObjectVisitor(ObjectVisitor):
         return False
 
     def _add_scan_tree_info(self, func_ea, arg_idx):
-        head_node = (idc.Name(self._cfunc.entry_ea), self._arg_idx)
-        tail_node = (idc.Name(func_ea), arg_idx)
+        head_node = (idc.get_name(self._cfunc.entry_ea), self._arg_idx)
+        tail_node = (idc.get_name(func_ea), arg_idx)
         if head_node in self._debug_scan_tree:
             self._debug_scan_tree[head_node].add(tail_node)
         else:
@@ -529,7 +525,7 @@ class RecursiveObjectDownwardsVisitor(RecursiveObjectVisitor, ObjectDownwardsVis
             arg_cexpr = parent
         else:
             return
-        idx, _ = get_func_argument_info(call_cexpr, arg_cexpr)
+        idx, _ = helper.get_func_argument_info(call_cexpr, arg_cexpr)
         func_ea = call_cexpr.x.obj_ea
         if func_ea == idaapi.BADADDR:
             return
@@ -541,9 +537,9 @@ class RecursiveObjectDownwardsVisitor(RecursiveObjectVisitor, ObjectDownwardsVis
 
         while self._new_for_visit:
             func_ea, arg_idx = self._new_for_visit.pop()
-            if is_imported_ea(func_ea):
+            if helper.is_imported_ea(func_ea):
                 continue
-            cfunc = decompile_function(func_ea)
+            cfunc = helper.decompile_function(func_ea)
             if cfunc:
                 assert arg_idx < len(cfunc.get_lvars()), "Wrong argument at func {}".format(to_hex(func_ea))
                 obj = VariableObject(cfunc.get_lvars()[arg_idx], arg_idx)
@@ -564,7 +560,7 @@ class RecursiveObjectUpwardsVisitor(RecursiveObjectVisitor, ObjectUpwardsVisitor
             func_ea = self._cfunc.entry_ea
             arg_idx = cexpr.v.idx
             if self._add_visit(func_ea, arg_idx):
-                for callee_ea in get_funcs_calling_address(func_ea):
+                for callee_ea in helper.get_funcs_calling_address(func_ea):
                     self._add_scan_tree_info(callee_ea, arg_idx)
 
     def _recursive_process(self):
@@ -574,10 +570,10 @@ class RecursiveObjectUpwardsVisitor(RecursiveObjectVisitor, ObjectUpwardsVisitor
             new_visit = list(self._new_for_visit)
             self._new_for_visit.clear()
             for func_ea, arg_idx in new_visit:
-                funcs = get_funcs_calling_address(func_ea)
+                funcs = helper.get_funcs_calling_address(func_ea)
                 obj = CallArgObject.create(idaapi.decompile(func_ea), arg_idx)
                 for callee_ea in funcs:
-                    cfunc = decompile_function(callee_ea)
+                    cfunc = helper.decompile_function(callee_ea)
                     if cfunc:
                         self.prepare_new_scan(cfunc, arg_idx, obj, False)
                         super(RecursiveObjectUpwardsVisitor, self)._recursive_process()

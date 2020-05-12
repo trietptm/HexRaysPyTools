@@ -1,13 +1,11 @@
+from PyQt5 import QtCore, QtWidgets
+
 import idaapi
-# import PySide.QtGui as QtGui
-# import PySide.QtCore as QtCore
-from HexRaysPyTools.Cute import *
-import Core.Classes
 
 
-class MyChoose(idaapi.Choose2):
+class MyChoose(idaapi.Choose):
     def __init__(self, items, title, cols, icon=-1):
-        idaapi.Choose2.__init__(self, title, cols, flags=idaapi.Choose2.CH_MODAL, icon=icon)
+        idaapi.Choose.__init__(self, title, cols, flags=idaapi.Choose.CH_MODAL, icon=icon)
         self.items = items
 
     def OnClose(self):
@@ -27,7 +25,7 @@ class StructureBuilder(idaapi.PluginForm):
         self.parent = None
 
     def OnCreate(self, form):
-        self.parent = form_to_widget(form)
+        self.parent = idaapi.PluginForm.FormToPyQtWidget(form)
         self.init_ui()
 
     def init_ui(self):
@@ -40,17 +38,17 @@ class StructureBuilder(idaapi.PluginForm):
         self.parent.resize(400, 600)
         self.parent.setWindowTitle('Structure Builder')
 
-        btn_finalize = QtGui.QPushButton("&Finalize")
-        btn_disable = QtGui.QPushButton("&Disable")
-        btn_enable = QtGui.QPushButton("&Enable")
-        btn_origin = QtGui.QPushButton("&Origin")
-        btn_array = QtGui.QPushButton("&Array")
-        btn_pack = QtGui.QPushButton("&Pack")
-        btn_unpack = QtGui.QPushButton("&Unpack")
-        btn_remove = QtGui.QPushButton("&Remove")
-        btn_resolve = QtGui.QPushButton("Resolve")
-        btn_clear = QtGui.QPushButton("Clear")  # Clear button doesn't have shortcut because it can fuck up all work
-        btn_recognize = QtGui.QPushButton("Recognize Shape")
+        btn_finalize = QtWidgets.QPushButton("&Finalize")
+        btn_disable = QtWidgets.QPushButton("&Disable")
+        btn_enable = QtWidgets.QPushButton("&Enable")
+        btn_origin = QtWidgets.QPushButton("&Origin")
+        btn_array = QtWidgets.QPushButton("&Array")
+        btn_pack = QtWidgets.QPushButton("&Pack")
+        btn_unpack = QtWidgets.QPushButton("&Unpack")
+        btn_remove = QtWidgets.QPushButton("&Remove")
+        btn_resolve = QtWidgets.QPushButton("Resolve")
+        btn_clear = QtWidgets.QPushButton("Clear")  # Clear button doesn't have shortcut because it can fuck up all work
+        btn_recognize = QtWidgets.QPushButton("Recognize Shape")
         btn_recognize.setStyleSheet("QPushButton {width: 100px; height: 20px;}")
 
         btn_finalize.setShortcut("f")
@@ -62,32 +60,32 @@ class StructureBuilder(idaapi.PluginForm):
         btn_unpack.setShortcut("u")
         btn_remove.setShortcut("r")
 
-        struct_view = QtGui.QTableView()
+        struct_view = QtWidgets.QTableView()
         struct_view.setModel(self.structure_model)
-        # struct_view.setSelectionMode(QtGui.QAbstractItemView.ExtendedSelection)
+        # struct_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
         struct_view.verticalHeader().setVisible(False)
         struct_view.verticalHeader().setDefaultSectionSize(24)
         struct_view.horizontalHeader().setStretchLastSection(True)
-        struct_view.horizontalHeader().setSectionResizeMode(QtGui.QHeaderView.ResizeToContents)
+        struct_view.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
 
-        grid_box = QtGui.QGridLayout()
+        grid_box = QtWidgets.QGridLayout()
         grid_box.setSpacing(0)
         grid_box.addWidget(btn_finalize, 0, 0)
         grid_box.addWidget(btn_enable, 0, 1)
         grid_box.addWidget(btn_disable, 0, 2)
         grid_box.addWidget(btn_origin, 0, 3)
-        grid_box.addItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.Expanding), 0, 5)
+        grid_box.addItem(QtWidgets.QSpacerItem(20, 20, QtWidgets.QSizePolicy.Expanding), 0, 5)
         grid_box.addWidget(btn_array, 1, 0)
         grid_box.addWidget(btn_pack, 1, 1)
         grid_box.addWidget(btn_unpack, 1, 2)
         grid_box.addWidget(btn_remove, 1, 3)
         grid_box.addWidget(btn_resolve, 0, 4)
-        grid_box.addItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.Expanding), 1, 5)
+        grid_box.addItem(QtWidgets.QSpacerItem(20, 20, QtWidgets.QSizePolicy.Expanding), 1, 5)
         grid_box.addWidget(btn_recognize, 0, 6)
         grid_box.addWidget(btn_clear, 1, 6)
 
-        vertical_box = QtGui.QVBoxLayout()
+        vertical_box = QtWidgets.QVBoxLayout()
         vertical_box.addWidget(struct_view)
         vertical_box.addLayout(grid_box)
         self.parent.setLayout(vertical_box)
@@ -149,26 +147,27 @@ class StructureGraphViewer(idaapi.GraphViewer):
 
 
 class ClassViewer(idaapi.PluginForm):
-    def __init__(self):
+    def __init__(self, proxy_model, class_model):
         super(ClassViewer, self).__init__()
         self.parent = None
-        self.class_tree = QtGui.QTreeView()
-        self.line_edit_filter = QtGui.QLineEdit()
+        self.class_tree = QtWidgets.QTreeView()
+        self.line_edit_filter = QtWidgets.QLineEdit()
 
-        self.action_collapse = QtGui.QAction("Collapse all", self.class_tree)
-        self.action_expand = QtGui.QAction("Expand all", self.class_tree)
-        self.action_set_arg = QtGui.QAction("Set First Argument Type", self.class_tree)
-        self.action_rollback = QtGui.QAction("Rollback", self.class_tree)
-        self.action_refresh = QtGui.QAction("Refresh", self.class_tree)
-        self.action_commit = QtGui.QAction("Commit", self.class_tree)
+        self.action_collapse = QtWidgets.QAction("Collapse all", self.class_tree)
+        self.action_expand = QtWidgets.QAction("Expand all", self.class_tree)
+        self.action_set_arg = QtWidgets.QAction("Set First Argument Type", self.class_tree)
+        self.action_rollback = QtWidgets.QAction("Rollback", self.class_tree)
+        self.action_refresh = QtWidgets.QAction("Refresh", self.class_tree)
+        self.action_commit = QtWidgets.QAction("Commit", self.class_tree)
 
-        self.menu = QtGui.QMenu(self.parent)
+        self.menu = QtWidgets.QMenu(self.parent)
 
-        self.proxy_model = Core.Classes.ProxyModel()
+        self.proxy_model = proxy_model
+        self.class_model = class_model
 
     def OnCreate(self, form):
         # self.parent = self.FormToPySideWidget(form)
-        self.parent = form_to_widget(form)
+        self.parent = idaapi.PluginForm.FormToPyQtWidget(form)
         self.init_ui()
 
     def init_ui(self):
@@ -181,33 +180,32 @@ class ClassViewer(idaapi.PluginForm):
             "QHeaderView::section {background-color: transparent; border: 1px solid;}"
         )
 
-        hbox_layout = QtGui.QHBoxLayout()
-        label_filter = QtGui.QLabel("&Filter:")
+        hbox_layout = QtWidgets.QHBoxLayout()
+        label_filter = QtWidgets.QLabel("&Filter:")
         label_filter.setBuddy(self.line_edit_filter)
         hbox_layout.addWidget(label_filter)
         hbox_layout.addWidget(self.line_edit_filter)
 
-        class_model = Core.Classes.TreeModel()
-        self.proxy_model.setSourceModel(class_model)
+        self.proxy_model.setSourceModel(self.class_model)
         self.proxy_model.setFilterCaseSensitivity(QtCore.Qt.CaseInsensitive)
         self.class_tree.setModel(self.proxy_model)
         self.class_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.class_tree.expandAll()
         self.class_tree.header().setStretchLastSection(True)
-        self.class_tree.header().setSectionResizeMode(QtGui.QHeaderView.ResizeToContents)
-        self.class_tree.setSelectionMode(QtGui.QAbstractItemView.ExtendedSelection)
+        self.class_tree.header().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.class_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
         self.action_collapse.triggered.connect(self.class_tree.collapseAll)
         self.action_expand.triggered.connect(self.class_tree.expandAll)
         self.action_set_arg.triggered.connect(
-            lambda: class_model.set_first_argument_type(
-                map(self.proxy_model.mapToSource, self.class_tree.selectedIndexes())
+            lambda: self.class_model.set_first_argument_type(
+                list(map(self.proxy_model.mapToSource, self.class_tree.selectedIndexes()))
             )
         )
-        self.action_rollback.triggered.connect(lambda: class_model.rollback())
-        self.action_refresh.triggered.connect(lambda: class_model.refresh())
-        self.action_commit.triggered.connect(lambda: class_model.commit())
-        class_model.refreshed.connect(self.class_tree.expandAll)
+        self.action_rollback.triggered.connect(lambda: self.class_model.rollback())
+        self.action_refresh.triggered.connect(lambda: self.class_model.refresh())
+        self.action_commit.triggered.connect(lambda: self.class_model.commit())
+        self.class_model.refreshed.connect(self.class_tree.expandAll)
 
         self.menu.addAction(self.action_collapse)
         self.menu.addAction(self.action_expand)
@@ -216,13 +214,13 @@ class ClassViewer(idaapi.PluginForm):
         self.menu.addAction(self.action_rollback)
         self.menu.addAction(self.action_commit)
 
-        vertical_box = QtGui.QVBoxLayout()
+        vertical_box = QtWidgets.QVBoxLayout()
         vertical_box.addWidget(self.class_tree)
         vertical_box.addLayout(hbox_layout)
         self.parent.setLayout(vertical_box)
 
         self.class_tree.activated[QtCore.QModelIndex].connect(
-            lambda x: class_model.open_function(self.proxy_model.mapToSource(x))
+            lambda x: self.class_model.open_function(self.proxy_model.mapToSource(x))
         )
         self.class_tree.customContextMenuRequested[QtCore.QPoint].connect(self.show_menu)
         self.line_edit_filter.textChanged[str].connect(self.proxy_model.set_regexp_filter)
@@ -236,11 +234,11 @@ class ClassViewer(idaapi.PluginForm):
 
     def show_menu(self, point):
         self.action_set_arg.setEnabled(True)
-        indexes = map(
+        indexes = list(map(
             self.proxy_model.mapToSource,
-            filter(lambda x: x.column() == 0, self.class_tree.selectedIndexes())
-        )
+            [x for x in self.class_tree.selectedIndexes() if x.column() == 0]
+        ))
         if len(indexes) > 1:
-            if filter(lambda x: len(x.internalPointer().children) > 0, indexes):
+            if [x for x in indexes if len(x.internalPointer().children) > 0]:
                 self.action_set_arg.setEnabled(False)
         self.menu.exec_(self.class_tree.mapToGlobal(point))
