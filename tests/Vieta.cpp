@@ -39,7 +39,7 @@ int main(int argc, char *argv[])
 	Couple couple;
 	Triple triple;
 	char *win_msg = "You win!\n";
-	char *fail_msg="Fail, you should learn simple math and Reverse Engineering!\n";
+	char *fail_msg = "Fail, you should learn simple math and Reverse Engineering!\n";
 	if (argc == 3)
 	{
 		couple.x = atoi(argv[1]);
